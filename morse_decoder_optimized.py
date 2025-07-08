@@ -17,6 +17,7 @@ from rich.align import Align
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from datetime import datetime
 import msvcrt  # Windows平台的键盘输入
+import itertools  # 用于生成排列组合
 
 class MorseCodeDecoderGUI:
     def __init__(self):
@@ -43,6 +44,10 @@ class MorseCodeDecoderGUI:
         self.expected_digits = [3, 4]  # 三角洲游戏中的数字是3位或4位
         self.number_sequences = []  # 存储完整的数字序列
         self.last_digit_time = 0
+        
+        # 密码排列分析
+        self.password_candidates = []  # 存储可能的密码排列
+        self.show_permutations = True  # 是否显示排列组合
         
         # 状态管理
         self.is_signal_on = False
@@ -79,8 +84,19 @@ class MorseCodeDecoderGUI:
         nyquist = 0.5 * self.sample_rate
         low = self.lowcut / nyquist
         high = self.highcut / nyquist
-        b, a = signal.butter(5, [low, high], btype='band', output='ba')
-        return b, a
+        
+        # 确保频率范围有效
+        low = max(0.01, min(low, 0.99))  # 限制在有效范围内
+        high = max(low + 0.01, min(high, 0.99))  # 确保high > low
+        
+        try:
+            b, a = signal.butter(5, [low, high], btype='band', output='ba')
+            return b, a
+        except Exception as e:
+            # 如果滤波器创建失败，使用更保守的参数
+            print(f"滤波器创建失败，使用默认参数: {e}")
+            b, a = signal.butter(3, [0.1, 0.4], btype='band', output='ba')
+            return b, a
 
     def apply_bandpass_filter(self, data):
         """应用带通滤波器"""
@@ -101,20 +117,6 @@ class MorseCodeDecoderGUI:
         self.layout["main"].split_row(
             Layout(name="left", ratio=2),
             Layout(name="right", ratio=3)
-        )
-
-    def create_header(self):
-        """创建头部显示"""
-        title = "🎮 三角洲行动摩斯电码数字解码器 v1.0"
-        runtime = f"运行时间: {self.get_runtime()}"
-        
-        header_content = f"[bold cyan]{title}[/bold cyan]\n[dim]{runtime}[/dim]"
-        
-        return Panel(
-            Align.center(header_content),
-            style="bright_blue",
-            height=4,
-            padding=(0, 1)
         )
 
     def create_header(self):
@@ -167,12 +169,33 @@ class MorseCodeDecoderGUI:
         # 完整的数字序列
         sequences_text = ""
         if self.number_sequences:
-            for i, seq in enumerate(self.number_sequences[-5:]):  # 显示最近5个序列
-                sequences_text += f"{seq['sequence']} ({seq['length']}位) "
-                if i % 2 == 1:  # 每两个序列换行
+            for i, seq in enumerate(self.number_sequences[-3:]):  # 显示最近3个序列
+                forced = " (强制)" if seq.get('forced', False) else ""
+                sequences_text += f"{seq['sequence']} ({seq['length']}位{forced}) "
+                if i < 2:  # 除了最后一个，都加换行
                     sequences_text += "\n"
         else:
             sequences_text = "暂无完整序列"
+        
+        # 密码候选分析
+        password_candidates_text = ""
+        if self.show_permutations and self.number_sequences:
+            candidates = self.analyze_recent_sequences()
+            if candidates:
+                password_candidates_text = "\n[bold magenta]🔍 可能的密码组合 (按置信度排序):[/bold magenta]\n"
+                
+                # 按原始序列分组显示
+                current_original = None
+                for i, candidate in enumerate(candidates[:8]):  # 显示前8个
+                    if candidate['original'] != current_original:
+                        current_original = candidate['original']
+                        password_candidates_text += f"\n[dim]原序列 {current_original}:[/dim] "
+                    
+                    confidence = candidate['confidence']
+                    color = "green" if confidence >= 80 else "yellow" if confidence >= 60 else "red"
+                    password_candidates_text += f"[{color}]{candidate['password']}({confidence}%)[/{color}] "
+            else:
+                password_candidates_text = "\n[dim]等待更多数据进行分析...[/dim]"
         
         # 最近信号历史
         signal_text = ""
@@ -187,8 +210,8 @@ class MorseCodeDecoderGUI:
 [bold blue]当前数字序列:[/bold blue]
 {current_sequence} ({len(self.current_number_sequence)}位)
 
-[bold green]完整数字序列:[/bold green]
-{sequences_text}
+[bold green]最近完整序列:[/bold green]
+{sequences_text}{password_candidates_text}
 
 [bold cyan]最近信号:[/bold cyan]
 {signal_text}"""
@@ -198,8 +221,9 @@ class MorseCodeDecoderGUI:
     def create_footer(self):
         """创建底部信息"""
         help_text = """[dim]按键控制:[/dim]
-[cyan]ESC[/cyan] - 退出程序  [cyan]r[/cyan] - 重置文本  [cyan]s[/cyan] - 保存结果
-[cyan]↑[/cyan] - 增加阈值  [cyan]↓[/cyan] - 减少阈值  [cyan]1-9[/cyan] - 快速设置阈值"""
+[cyan]ESC[/cyan] - 退出程序  [cyan]r[/cyan] - 重置文本  [cyan]s[/cyan] - 保存结果  [cyan]p[/cyan] - 切换排列显示
+[cyan]↑[/cyan] - 增加阈值  [cyan]↓[/cyan] - 减少阈值  [cyan]1-9[/cyan] - 快速设置阈值
+[yellow]💡 如果密码顺序错误，查看"可能的密码组合"部分[/yellow]"""
         
         return Panel(help_text, style="dim", height=6)
 
@@ -346,6 +370,28 @@ class MorseCodeDecoderGUI:
                     for i, seq in enumerate(self.number_sequences, 1):
                         forced = " (强制完成)" if seq.get('forced', False) else ""
                         f.write(f"{i:3d}. {seq['sequence']} ({seq['length']}位) - {seq['timestamp']}{forced}\n")
+                    
+                    # 添加密码候选分析
+                    f.write("\n" + "="*50 + "\n")
+                    f.write("密码候选分析 (容错排列)\n")
+                    f.write("="*50 + "\n\n")
+                    
+                    candidates = self.analyze_recent_sequences(max_sequences=5)
+                    if candidates:
+                        current_original = None
+                        for candidate in candidates:
+                            if candidate['original'] != current_original:
+                                current_original = candidate['original']
+                                f.write(f"\n原始序列: {current_original}\n")
+                                f.write("-" * 30 + "\n")
+                            
+                            confidence_desc = "高" if candidate['confidence'] >= 80 else "中" if candidate['confidence'] >= 60 else "低"
+                            f.write(f"  密码: {candidate['password']} (置信度: {candidate['confidence']}% - {confidence_desc})\n")
+                    else:
+                        f.write("暂无足够数据进行密码候选分析\n")
+                    
+                    f.write(f"\n注意: 如果密码顺序不对，请尝试上述候选密码\n")
+                    f.write(f"置信度说明: 高(≥80%) > 中(≥60%) > 低(<60%)\n")
                 
                 self.console.print(f"[green]结果已保存到: {filename}[/green]")
             except Exception as e:
@@ -358,6 +404,7 @@ class MorseCodeDecoderGUI:
         self.total_letters = 0
         self.number_sequences.clear()
         self.signal_history.clear()
+        self.password_candidates.clear()
 
     def handle_keyboard_events(self):
         """处理键盘事件"""
@@ -384,6 +431,8 @@ class MorseCodeDecoderGUI:
                                 self.reset_text()
                             elif key_char == 's':
                                 self.save_result()
+                            elif key_char == 'p':
+                                self.show_permutations = not self.show_permutations
                             elif key_char.isdigit() and key_char != '0':
                                 # 数字键1-9快速设置阈值
                                 quick_threshold = int(key_char) * 0.001
@@ -400,6 +449,113 @@ class MorseCodeDecoderGUI:
         new_threshold = self.threshold + delta
         if new_threshold > 0:
             self.threshold = new_threshold
+
+    def generate_password_permutations(self, password):
+        """生成密码的所有可能排列"""
+        if len(password) < 3 or len(password) > 4:
+            return []
+        
+        # 生成所有排列
+        all_perms = list(itertools.permutations(password))
+        # 转换为字符串列表
+        perm_strings = [''.join(perm) for perm in all_perms]
+        # 去重并排序
+        unique_perms = sorted(list(set(perm_strings)))
+        
+        return unique_perms
+
+    def analyze_recent_sequences(self, max_sequences=3):
+        """分析最近的数字序列，生成可能的密码组合"""
+        if len(self.number_sequences) == 0:
+            return []
+        
+        recent_sequences = self.number_sequences[-max_sequences:]
+        all_candidates = []
+        
+        for seq_info in recent_sequences:
+            sequence = seq_info['sequence']
+            timestamp = seq_info['timestamp']
+            
+            # 生成该序列的所有排列
+            permutations = self.generate_password_permutations(sequence)
+            
+            # 为每个排列添加分析信息
+            for perm in permutations:
+                candidate = {
+                    'password': perm,
+                    'original': sequence,
+                    'timestamp': timestamp,
+                    'confidence': self.calculate_confidence(perm, sequence),
+                    'length': len(perm)
+                }
+                all_candidates.append(candidate)
+        
+        # 按置信度排序
+        all_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        return all_candidates[:12]  # 返回最多12个候选
+
+    def calculate_confidence(self, permutation, original):
+        """计算密码排列的置信度"""
+        confidence = 50  # 基础置信度
+        
+        # 如果排列与原序列相同，置信度最高
+        if permutation == original:
+            confidence = 95
+        
+        # 检查常见密码模式
+        # 顺序递增模式 (如123, 1234)
+        if self.is_sequential_ascending(permutation):
+            confidence += 20
+        
+        # 顺序递减模式 (如321, 4321)
+        elif self.is_sequential_descending(permutation):
+            confidence += 15
+        
+        # 重复数字较少的排列置信度更高
+        unique_digits = len(set(permutation))
+        if unique_digits == len(permutation):  # 所有数字都不重复
+            confidence += 10
+        elif unique_digits == len(permutation) - 1:  # 只有一个重复
+            confidence += 5
+        
+        # 避免过多连续相同数字
+        max_consecutive = self.get_max_consecutive_digits(permutation)
+        if max_consecutive > 2:
+            confidence -= 10 * (max_consecutive - 2)
+        
+        return min(max(confidence, 0), 100)  # 限制在0-100之间
+
+    def is_sequential_ascending(self, sequence):
+        """检查是否为递增序列"""
+        for i in range(len(sequence) - 1):
+            if int(sequence[i]) >= int(sequence[i + 1]):
+                return False
+        return True
+
+    def is_sequential_descending(self, sequence):
+        """检查是否为递减序列"""
+        for i in range(len(sequence) - 1):
+            if int(sequence[i]) <= int(sequence[i + 1]):
+                return False
+        return True
+
+    def get_max_consecutive_digits(self, sequence):
+        """获取最大连续相同数字的长度"""
+        if len(sequence) <= 1:
+            return len(sequence)
+        
+        max_count = 1
+        current_count = 1
+        
+        for i in range(1, len(sequence)):
+            if sequence[i] == sequence[i-1]:
+                current_count += 1
+                max_count = max(max_count, current_count)
+            else:
+                current_count = 1
+        
+        return max_count
 
 def find_delta_force_process():
     """查找三角洲相关进程"""
@@ -486,6 +642,24 @@ def main():
                         for seq in decoder.number_sequences[-3:]:
                             forced = " (强制完成)" if seq.get('forced', False) else ""
                             console.print(f"  🔢 {seq['sequence']} ({seq['length']}位){forced}")
+                        
+                        # 显示密码候选分析
+                        candidates = decoder.analyze_recent_sequences()
+                        if candidates:
+                            console.print(f"\n[magenta]🔍 可能的正确密码组合：[/magenta]")
+                            current_original = None
+                            for candidate in candidates[:6]:  # 显示前6个最佳候选
+                                if candidate['original'] != current_original:
+                                    current_original = candidate['original']
+                                    console.print(f"\n[dim]基于序列 {current_original}:[/dim]")
+                                
+                                confidence = candidate['confidence']
+                                if confidence >= 80:
+                                    console.print(f"  🟢 {candidate['password']} (置信度: {confidence}% - 推荐)")
+                                elif confidence >= 60:
+                                    console.print(f"  🟡 {candidate['password']} (置信度: {confidence}% - 可能)")
+                                else:
+                                    console.print(f"  🔴 {candidate['password']} (置信度: {confidence}% - 备选)")
                     else:
                         console.print("[yellow]📝 未解码到完整的数字序列[/yellow]")
         
