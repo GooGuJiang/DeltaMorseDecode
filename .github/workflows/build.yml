@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -19,9 +19,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
       - name: Build executable
-        run: pyinstaller --onefile morse_decoder_optimized.py
+        run: |
+          pyinstaller --onefile morse_decoder_optimized.py
+          Copy-Item win-capture-audio-wrapper.dll dist/
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: morse-decoder
-          path: dist/morse_decoder_optimized.exe
+          path: |
+            dist/morse_decoder_optimized.exe
+            dist/win-capture-audio-wrapper.dll
