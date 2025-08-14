@@ -121,7 +121,7 @@ class MorseCodeDecoderGUI:
 
     def create_header(self):
         """创建头部显示"""
-        title = "🎮 三角洲行动摩斯电码数字解码器 v1.0"
+        title = "🎮 三角洲行动摩斯电码数字解码器 v1.1"
         runtime = f"运行时间: {self.get_runtime()}"
         
         header_content = f"[bold cyan]{title}[/bold cyan]\n[dim]{runtime}[/dim]"
@@ -145,6 +145,7 @@ class MorseCodeDecoderGUI:
         table.add_row("📏 字母间隔", f"{self.letter_gap:.3f}s")
         table.add_row("📏 单词间隔", f"{self.word_gap:.3f}s")
         table.add_row("🔊 频率范围", f"{self.lowcut:.0f}-{self.highcut:.0f}Hz")
+        table.add_row("🔢 期望位数", "/".join(str(n) for n in self.expected_digits))
         
         # 添加分隔线
         table.add_row("", "")
@@ -290,9 +291,9 @@ class MorseCodeDecoderGUI:
             # 长间隔：可能是序列结束
             if self.current_code:
                 self.decode_current_code()
-            
+
             # 如果当前序列不为空且超过一定时间，强制完成序列
-            if self.current_number_sequence and len(self.current_number_sequence) >= 3:
+            if self.current_number_sequence and len(self.current_number_sequence) >= min(self.expected_digits):
                 self.force_complete_sequence()
                 
         elif duration > self.letter_gap:
@@ -330,8 +331,8 @@ class MorseCodeDecoderGUI:
         """检查是否完成了一个完整的数字序列"""
         seq_length = len(self.current_number_sequence)
         
-        # 如果达到预期长度（3位或4位），保存序列
-        if seq_length in self.expected_digits:
+        max_len = max(self.expected_digits)
+        if seq_length == max_len:
             sequence_info = {
                 'sequence': self.current_number_sequence,
                 'length': seq_length,
@@ -339,11 +340,8 @@ class MorseCodeDecoderGUI:
                 'complete_time': time.time()
             }
             self.number_sequences.append(sequence_info)
-            
-            # 重置当前序列
             self.current_number_sequence = ""
-        elif seq_length > max(self.expected_digits):
-            # 如果超过最大预期长度，重置序列
+        elif seq_length > max_len:
             self.current_number_sequence = ""
 
     def audio_callback(self, audio_data, frames):
